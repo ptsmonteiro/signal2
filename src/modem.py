@@ -61,7 +61,7 @@ class Modem():
         crc = crc.value.to_bytes(2, byteorder="big")
         return crc
 
-    def modulate(self, payload: bytes) -> bytes:
+    def modulate(self, payload: bytes) -> numpy.array:
         # Frame: <preamble><payload of bytes_per_frame><postamble>
         # Payload: <bytes_per_frame -2><crc 2 bytes>
 
@@ -70,7 +70,8 @@ class Modem():
 
         buffer = bytearray(payload_bytes_per_frame)
         buffer[: len(payload)] = payload
-        buffer += self.__frame_crc__(payload)
+        crc = self.__frame_crc__(bytes(buffer))
+        buffer += crc
 
         # Modulate data
         payload_samples = codec2.api.freedv_get_n_tx_modem_samples(self.c2instance)
@@ -79,38 +80,33 @@ class Modem():
         c2buffer = (ctypes.c_ubyte * bytes_per_frame).from_buffer_copy(buffer)
         codec2.api.freedv_rawdatatx(self.c2instance, payload_audio, c2buffer)
 
-        audio_out_bytes = (self.__modulate_preamble__() + 
-                             payload_audio + 
-                             self.__modulate_postamble__())
+        preamble = self.__modulate_preamble__()
+        postamble = self.__modulate_postamble__()
+        self.logger.debug(f"Preamble {len(preamble)} bytes, payload_audio {len(payload_audio)} bytes, postamble {len(postamble)} bytes")
+        #audio_out_bytes = bytes(8000*2) + preamble + payload_audio + postamble + bytes(8000*2)
+        audio_out_bytes = preamble + payload_audio + postamble
 
         audio_out_numpy = numpy.frombuffer(audio_out_bytes, dtype=numpy.int16)
-        print(f"Encoded: {audio_out_numpy}")
-        return bytes(audio_out_numpy)
-        audio_out_48k = bytes(self.resampler.resample8_to_48(audio_out_numpy))
-        return audio_out_48k
+        audio48k = self.resampler.resample8_to_48(audio_out_numpy)
+        return audio48k
 
-    def demodulate(self, audio_data: bytes) -> bytes:
+    def demodulate(self, audio48k: numpy.array) -> bytes:
 
-        silence = (b'\x00') * 3
-        #audio_data = silence + audio_data + silence
-        
-        audio_numpy = numpy.frombuffer(silence + audio_data, dtype=numpy.int16)
-        #audio8k = self.resampler.resample48_to_8(audio_numpy)
-        audio8k = audio_numpy
-
-        audiobuffer = codec2.audio_buffer(audio8k.size)
-        audiobuffer.push(audio8k)
+        audio8k = self.resampler.resample48_to_8(audio48k)
 
         bytes_per_frame = self.get_bytes_per_frame()
-
         bytes_out = ctypes.create_string_buffer(bytes_per_frame)
 
+        offset = 0
         nin = codec2.api.freedv_nin(self.c2instance)
-        while audiobuffer.nbuffer >= nin:
-            print(f"Decoding: {audiobuffer.buffer[:nin]}")
+        while offset < audio8k.size:
+            self.logger.debug(f"Decoding offset {offset} with length {nin} ({offset+nin}/{audio8k.size})")
+            #self.logger.debug("Decoding", audio = audio8k[offset:offset+nin])
             nbytes = codec2.api.freedv_rawdatarx(self.c2instance, 
                                                  bytes_out, 
-                                                 audiobuffer.buffer.ctypes)
+                                                 audio8k[offset:offset+nin].ctypes)
+
+            offset += nin
 
             # 1 trial
             # 2 sync
@@ -126,8 +122,9 @@ class Modem():
             #if rx_status != 6: 
             #    raise RuntimeError(f"Unable to decode. Status {rx_status}.")
 
-            audiobuffer.pop(nin)
             nin = codec2.api.freedv_nin(self.c2instance)
+
+            self.logger.debug(f"Decoded {nbytes} bytes.")
 
             #if nbytes != bytes_per_frame: 
             #    raise RuntimeError(f"Got a different decoded data length than expected")
