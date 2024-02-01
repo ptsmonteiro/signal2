@@ -4,7 +4,7 @@ import komm
 import math
 import sounddevice as sd
 
-SAMPLE_RATE = 8000
+SAMPLE_RATE = 48000
 CENTER_FREQ = 1500
 
 def plot_signal(signal, sample_rate = SAMPLE_RATE):
@@ -50,7 +50,7 @@ def test_qam4():
         signal = np.fft.ifft(cenas)
         plot_signal(signal)
 
-def test_fsk(data: bytes, bandwidth = 500, data_carriers = 16):
+def test_fsk(data: bytes, bandwidth = 500, data_carriers = 8):
     bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
     print("unpacked bits", bits)
 
@@ -87,18 +87,25 @@ def test_fsk(data: bytes, bandwidth = 500, data_carriers = 16):
 
         symbol_signal = np.fft.ifft(freq_signal)
 
-        if False and prev_symbol_signal is not None:
-            prev_symbol_signal_period = 1 / prev_symbol_freq # time
-            phase_offset = (symbol_duration % prev_symbol_signal_period) / prev_symbol_signal_period # phase as percentage
+        if prev_symbol_signal is not None:
+            print(f"Symbol period {round(SAMPLE_RATE / freq, 3)} samples")
+
+            prev_symbol_period_samples = SAMPLE_RATE / prev_symbol_freq
+            print(f"Previous signal period {prev_symbol_period_samples} samples")
+            phase_offset = (SAMPLE_RATE * symbol_duration % prev_symbol_period_samples) / prev_symbol_period_samples # phase as percentage
+            print(f"Phase offset {round(phase_offset*100,1)}%")
 
             # what to discard on the current symbol from the beginning to align phase
             start_trim_samples = (((1 - phase_offset) / freq) * SAMPLE_RATE)
-            print(f"Trimming {start_trim_samples} samples for a {phase_offset}% phase offset")
+            print(f"Trimming {start_trim_samples} samples for a {phase_offset*100}% phase offset")
+            #print("Symbol before", symbol_signal[:10])
             symbol_signal = symbol_signal[round(start_trim_samples):]
+            #print("Symbol after", symbol_signal[:10])
 
         # trim to symbol duration
         samples_duration = SAMPLE_RATE * symbol_duration
-        symbol_signal = symbol_signal[0:int(samples_duration)]
+        symbol_signal = symbol_signal[0:round(samples_duration)]
+        print("final symbol samples", symbol_signal.size)
         #plot_signal(symbol_signal)
 
         signal = np.append(signal, symbol_signal)
