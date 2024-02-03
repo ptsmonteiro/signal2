@@ -6,23 +6,35 @@ import unittest
 import sounddevice as sd
 import numpy as np
 import time
+import codec2
 
 class TestMain(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.modem_a = modem.Modem()
-        cls.modem_b = modem.Modem()
+        pass
 
-    def channelEffects(self, audio_data):
-        return audio_data
-
-    def testMain(self):
+    def __testMode(self, mode):
+        m = modem.Modem(mode)
         payload = b"Hello World!"
-        audio_data = self.modem_a.modulate(payload)
-        received_audio_data = self.channelEffects(audio_data)
-        received_payload = self.modem_b.demodulate(received_audio_data)
-        self.assertEqual(received_payload, payload)
+        audio_data = m.modulate(payload)
+        received_payload = m.demodulate(audio_data)
+        self.assertEqual(received_payload[:len(payload)], payload)
+
+    def testModeDataC0(self):
+        self.__testMode(codec2.FREEDV_MODE.datac0)
+
+    def testModeDataC1(self):
+        self.__testMode(codec2.FREEDV_MODE.datac1)
+
+    def testModeDataC13(self):
+        self.__testMode(codec2.FREEDV_MODE.datac13)
+
+    def testModeDataC3(self):
+        self.__testMode(codec2.FREEDV_MODE.datac3)
+
+    def testModeDataC4(self):
+        self.__testMode(codec2.FREEDV_MODE.datac4)
 
     def xtestModulation(self):
         payload = b"Hello World!"

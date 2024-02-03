@@ -3,12 +3,17 @@ import matplotlib.pyplot as plt
 import komm
 import math
 import sounddevice as sd
+from scipy.signal import spectrogram
 
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 8000
 CENTER_FREQ = 1500
+SYMBOL_DURATION_FACTOR = 1
 
 def plot_signal(signal, sample_rate = SAMPLE_RATE):
     t = np.arange(0, signal.size / sample_rate, 1/SAMPLE_RATE)
+
+    if signal.size < t.size:
+         signal = np.append(signal, np.zeros(t.size - signal.size, dtype=signal.dtype))
 
     plt.plot(t, np.real(signal))
     plt.title('Plot of a Signal')
@@ -28,7 +33,12 @@ def plot_spectrum(signal, sample_rate = SAMPLE_RATE):
     plt.grid(True)
     plt.show()
 
-
+def plot_spectrogram(signal):
+    f, t, Sxx = spectrogram(signal, SAMPLE_RATE)
+    plt.pcolormesh(t, f, Sxx, shading='gouraud')
+    plt.ylabel('Frequency [Hz]')
+    plt.xlabel('Time [sec]')
+    plt.show()
 
 def play_signal(signal, sample_rate = SAMPLE_RATE):
     sd.play(signal, samplerate=sample_rate)
@@ -50,77 +60,100 @@ def test_qam4():
         signal = np.fft.ifft(cenas)
         plot_signal(signal)
 
-def test_fsk(data: bytes, bandwidth = 500, data_carriers = 8):
+def fade_in_out(signal, freq, cycles = 2):
+        """Apply a fade in and a fade out on a signal
+        """
+        fade_duration = cycles / freq
+        fade_samples = fade_duration * SAMPLE_RATE
+
+        fade = np.arange(1, 0, -1/fade_samples)
+        signal[-fade.size:] *= fade
+
+        fade = np.arange(0, 1, 1/fade_samples)
+        signal[0:fade.size] *= fade
+
+        return signal
+
+def mod_fsk(data: bytes, bandwidth = 2400, data_carriers = 16):
+    """Modulates data into a MFSK signal according to specified bandwidth and 
+    number of data carriers.
+    """
     bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
-    print("unpacked bits", bits)
+    print(f"{bits.size} bits")
+
+    if (bits.size % data_carriers) > 0:
+        bits = np.append(bits, np.zeros(data_carriers - (bits.size % data_carriers), dtype=np.uint8))
+
+    print(f"{bits.size} bits after padding")
 
     assert(bits.size % data_carriers == 0)
 
-    base_freq = CENTER_FREQ - bandwidth//2
-    print("base freq", base_freq)
     delta_freq = bandwidth // data_carriers
     print("delta freq", delta_freq)
 
+    base_freq = CENTER_FREQ - bandwidth//2 + delta_freq//2
+    print("base freq", base_freq)
+
     bits_per_symbol = int(math.log2(data_carriers))
 
-    symbol_duration = 1 / delta_freq
+    symbol_duration = SYMBOL_DURATION_FACTOR / delta_freq
     print(f"Symbol duration: {symbol_duration}s")
     print(f"Symbol samples {SAMPLE_RATE / delta_freq}")
 
     signal = np.zeros(0, dtype=np.complex128)
 
     prev_symbol_signal = None
-    prev_symbol_freq = None
 
     for i in range(0, bits.size, bits_per_symbol):
         symbol_bits = bits[i:i+bits_per_symbol]
-        #print("symbol bits", symbol_bits)
         
         # Go from n bits to bytes padding as necessary
         left_zero_padding = np.zeros(8 - symbol_bits.size, dtype=np.uint8)
         carrier_index = np.packbits(np.append(left_zero_padding, symbol_bits))[0]
         
-        freq_signal = np.zeros(SAMPLE_RATE)
+        freq_signal = np.zeros(SAMPLE_RATE, dtype=np.complex128)
         freq = base_freq + carrier_index*delta_freq
-        print("freq", freq)
-        freq_signal[freq] = 1
+        #print("freq", freq)
 
+        if prev_symbol_signal is None:
+            freq_signal[freq] = np.exp(1j * np.pi/2)
+        else:
+            # This aligns the phase new symbol signal with the phase from 
+            # the previous symbol signal
+            freq_signal[freq] = np.exp(1j * (np.pi/2 + phase_next_sample))
+
+        # 1s signal
         symbol_signal = np.fft.ifft(freq_signal)
 
-        if prev_symbol_signal is not None:
-            print(f"Symbol period {round(SAMPLE_RATE / freq, 3)} samples")
+        # trim to 2x symbol duration
+        symbol_signal = symbol_signal[:int(2 * symbol_duration * SAMPLE_RATE)]
 
-            prev_symbol_period_samples = SAMPLE_RATE / prev_symbol_freq
-            print(f"Previous signal period {prev_symbol_period_samples} samples")
-            phase_offset = (SAMPLE_RATE * symbol_duration % prev_symbol_period_samples) / prev_symbol_period_samples # phase as percentage
-            print(f"Phase offset {round(phase_offset*100,1)}%")
-
-            # what to discard on the current symbol from the beginning to align phase
-            start_trim_samples = (((1 - phase_offset) / freq) * SAMPLE_RATE)
-            print(f"Trimming {start_trim_samples} samples for a {phase_offset*100}% phase offset")
-            #print("Symbol before", symbol_signal[:10])
-            symbol_signal = symbol_signal[round(start_trim_samples):]
-            #print("Symbol after", symbol_signal[:10])
-
+        # normalize
+        symbol_signal = symbol_signal / np.max(np.real(symbol_signal))
+                    
         # trim to symbol duration
         samples_duration = SAMPLE_RATE * symbol_duration
         symbol_signal = symbol_signal[0:round(samples_duration)]
-        print("final symbol samples", symbol_signal.size)
-        #plot_signal(symbol_signal)
+
+        # Apply fading in the beginning and end of the symbol signal
+        #symbol_signal = fade_in_out(symbol_signal, freq)
 
         signal = np.append(signal, symbol_signal)
 
         prev_symbol_signal = symbol_signal
-        prev_symbol_freq = freq
-        
-
-    audio = np.real(signal) / np.max(np.real(signal))
+        phase_offset_next_sample = (2 * np.pi * freq) / SAMPLE_RATE
+        phase_next_sample = np.angle(symbol_signal[-1]) + phase_offset_next_sample
+    
+    audio = np.real(signal) / (100 * np.max(np.real(signal)))
     final_duration = audio.size / SAMPLE_RATE
     speed = len(data) / final_duration
-    print(f"Final duration: {final_duration}s, {speed} bytes/s")
-    plot_signal(signal)
+    print(f"Transmission: {final_duration} s, {len(data)} bytes, {speed} bytes/s")
+    #plot_signal(signal)
     #plot_spectrum(signal)
-    play_signal(audio)
+    return audio
 
 
-test_fsk(b'Hello World!')
+audio = mod_fsk(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit.")
+#play_signal(audio)
+#plot_signal(audio)
+plot_spectrogram(audio)
