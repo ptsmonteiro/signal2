@@ -8,6 +8,8 @@ from scipy.signal import spectrogram
 SAMPLE_RATE = 8000
 CENTER_FREQ = 1500
 SYMBOL_DURATION_FACTOR = 1
+FSK_BANDWIDTH = 2400
+FSK_CARRIERS = 16
 
 def plot_signal(signal, sample_rate = SAMPLE_RATE):
     t = np.arange(0, signal.size / sample_rate, 1/SAMPLE_RATE)
@@ -23,7 +25,7 @@ def plot_signal(signal, sample_rate = SAMPLE_RATE):
     plt.show()
 
 def plot_spectrum(signal, sample_rate = SAMPLE_RATE):
-    freq_signal = np.real(np.fft.fft(signal))
+    freq_signal = np.abs(np.fft.fft(signal))
     freq_signal = freq_signal[0:freq_signal.size//2]
     f = np.arange(0, sample_rate/2, sample_rate / 2 / freq_signal.size)
     plt.plot(f, freq_signal)
@@ -74,7 +76,7 @@ def fade_in_out(signal, freq, cycles = 2):
 
         return signal
 
-def mod_fsk(data: bytes, bandwidth = 2400, data_carriers = 16):
+def mod_fsk(data: bytes, bandwidth = FSK_BANDWIDTH, data_carriers = FSK_CARRIERS):
     """Modulates data into a MFSK signal according to specified bandwidth and 
     number of data carriers.
     """
@@ -113,7 +115,7 @@ def mod_fsk(data: bytes, bandwidth = 2400, data_carriers = 16):
         
         freq_signal = np.zeros(SAMPLE_RATE, dtype=np.complex128)
         freq = base_freq + carrier_index*delta_freq
-        #print("freq", freq)
+        print("Encoded symbol freq", freq)
 
         if prev_symbol_signal is None:
             freq_signal[freq] = np.exp(1j * np.pi/2)
@@ -152,8 +154,37 @@ def mod_fsk(data: bytes, bandwidth = 2400, data_carriers = 16):
     #plot_spectrum(signal)
     return audio
 
+def demod_fsk(signal, bandwidth = FSK_BANDWIDTH, data_carriers = FSK_CARRIERS):
+    delta_freq = bandwidth // data_carriers
+    print("delta freq", delta_freq)
+
+    base_freq = CENTER_FREQ - bandwidth//2 + delta_freq//2
+    print("base freq", base_freq)
+
+    bits_per_symbol = int(math.log2(data_carriers))
+
+    symbol_duration = SYMBOL_DURATION_FACTOR / delta_freq
+    print(f"Symbol duration: {symbol_duration}s")
+    symbol_samples = round(SAMPLE_RATE * symbol_duration)
+    print(f"Symbol samples {symbol_samples}")
+
+    i = 0
+    while i < signal.size:
+        symbol_signal = signal[i:i+symbol_samples]
+        symbol_signal = np.append(symbol_signal, np.zeros(SAMPLE_RATE - symbol_signal.size, dtype=symbol_signal.dtype))
+        #plot_signal(symbol_signal)
+        #plot_spectrum(symbol_signal)
+
+        freq_signal = np.abs(np.fft.fft(symbol_signal))
+        freq_signal = freq_signal[0:round(freq_signal.size//2)]
+        fi = np.argmax(freq_signal)
+        #freq = (fi * SAMPLE_RATE) / (freq_signal.size * 2)
+        print(f"Decoded symbol freq {fi}hz")
+
+        i += symbol_samples
 
 audio = mod_fsk(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit.")
 #play_signal(audio)
 #plot_signal(audio)
-plot_spectrogram(audio)
+#plot_spectrogram(audio)
+bytes = demod_fsk(audio)
